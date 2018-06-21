@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,84 +19,96 @@ func (b ByName) Swap(i, j int) { b[i], b[j] = b[j], b[i] }
 
 func (b ByName) Less(i, j int) bool { return b[i].Name() < b[j].Name() }
 
-func isDir(name string) (bool, error) {
-	stats, err := os.Stat(name)
-	if err != nil {
-		return false, err
+func isDir(path string) bool {
+	stats, e := os.Stat(path)
+	if e != nil {
+		fmt.Println(e)
 	}
-	return stats.IsDir(), nil
+	return stats.IsDir()
 }
 
-func writeLevelChars(lvl int, out *os.File, last bool, h []bool) error {
-	var char string
-	if last {
-		char = "└───"
-	} else {
-		char = "├───"
-	}
-	for i := 0; i < len(h); i++ {
-		if h[i] {
-			out.Write([]byte("|   "))
+func formatEntryString(info os.FileInfo, last bool, l []bool) (entry string) {
+	for i := 0; i < len(l); i++ {
+		if l[i] {
+			entry += "\t"
 		} else {
-			out.Write([]byte("   "))
+			entry += "│\t"
 		}
 	}
-	out.Write([]byte(char))
-	return nil
+	if last {
+		entry += "└───"
+	} else {
+		entry += "├───"
+	}
+	entry += info.Name()
+	if !info.IsDir() {
+		switch info.Size() == 0 {
+		case true:
+			entry += " (empty)"
+		case false:
+			entry += fmt.Sprintf(" (%db)", info.Size())
+		}
+	}
+	entry += "\n"
+	return entry
 }
 
-func dirTreeLevel(lvl int, out *os.File, path string, pf bool, hack []bool) error {
+func treeRecursive(out io.Writer, path string, printFiles bool, lastitudes []bool) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
-	}
-	hack = append(hack, true)
-	b, _ := isDir(path)
-	if !b {
-		return nil
 	}
 	entries, err := f.Readdir(FullDirectory)
 	if err != nil {
 		return err
 	}
-	eNum := len(entries)
+
+	if !printFiles {
+		for i := len(entries) - 1; i >= 0; i-- {
+			if !entries[i].IsDir() {
+				entries = append(entries[:i], entries[i+1:]...)
+			}
+		}
+	}
 
 	sort.Sort(ByName(entries))
 
+	eNum := len(entries)
 	for i := 0; i < eNum; i++ {
+		newL := make([]bool, len(lastitudes))
+		copy(newL, lastitudes)
 		subPath := filepath.Join(path, entries[i].Name())
-		b, _ := isDir(subPath)
+		b := entries[i].IsDir()
 		last := i == eNum-1
-		if last {
-			hack[lvl] = false
-		}
-		writeLevelChars(lvl, out, last, hack)
-		out.Write([]byte(entries[i].Name() + "\n"))
-
+		name := formatEntryString(entries[i], last, newL)
+		//out.Write([]byte(name))
+		fmt.Fprint(out, name)
 		if b {
-			dirTreeLevel(lvl+1, out, subPath, pf, hack)
+			if last {
+				newL = append(newL, true)
+			} else {
+				newL = append(newL, false)
+			}
+			treeRecursive(out, subPath, printFiles, newL)
 		}
 	}
 	return nil
 }
 
-func dirTree(out *os.File, path string, printFiles bool) (e error) {
-	hack := make([]bool, 0)
-	startingLevel := 0
+func dirTree(out io.Writer, path string, printFiles bool) (e error) {
+	// lastitudes[i] == true when parent i of a child i+1 is the last folder on i level
+	lastitudes := make([]bool, 0)
 	if !filepath.IsAbs(path) {
 		path, e = filepath.Abs(path)
 		if e != nil {
 			return e
 		}
 	}
-	b, _ := isDir(path)
+	b := isDir(path)
 	if !b {
 		return errors.New("Specify directory")
 	}
-	if e = os.Chdir(path); e != nil {
-		return e
-	}
-	return dirTreeLevel(startingLevel, out, path, printFiles, hack)
+	return treeRecursive(out, path, printFiles, lastitudes)
 }
 
 func main() {
